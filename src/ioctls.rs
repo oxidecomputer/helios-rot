@@ -7,29 +7,8 @@ use std::ffi::c_void;
 use rustix::ioctl::{Ioctl, IoctlOutput, Opcode};
 
 use crate::ffi::{
-    OS_ROT_IOC_ATTEST, OS_ROT_IOC_GET_CERTS, OS_ROT_IOC_GET_LOG, OsRotAttest,
-    OsRotCerts, OsRotLog,
+    OS_ROT_IOC_ATTEST, OS_ROT_IOC_GET_CERTS, OsRotAttest, OsRotCerts,
 };
-
-pub(crate) struct GetLog<'a>(pub(crate) &'a mut OsRotLog);
-
-unsafe impl Ioctl for GetLog<'_> {
-    type Output = ();
-    const IS_MUTATING: bool = true;
-
-    fn opcode(&self) -> Opcode {
-        OS_ROT_IOC_GET_LOG
-    }
-    fn as_ptr(&mut self) -> *mut c_void {
-        (self.0 as *mut OsRotLog).cast()
-    }
-    unsafe fn output_from_ptr(
-        _: IoctlOutput,
-        _: *mut c_void,
-    ) -> rustix::io::Result<()> {
-        Ok(())
-    }
-}
 
 pub(crate) struct GetCerts<'a>(pub(crate) &'a mut OsRotCerts);
 

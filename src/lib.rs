@@ -14,32 +14,29 @@ use rustix::ioctl::ioctl;
 
 use crate::{
     ffi::{
-        OS_ROT_HASH_SIZE, OS_ROT_SIG_SIZE, OsRotAttest, OsRotCerts, OsRotLog,
+        OS_ROT_HASH_SIZE, OS_ROT_SIG_SIZE, OsRotAttest, OsRotCerts,
+        RawOsRotError,
     },
     flexible::alloc_flexible_struct,
-    ioctls::{Attest, GetCerts, GetLog},
+    ioctls::{Attest, GetCerts},
 };
 
 mod ffi;
 mod flexible;
 mod ioctls;
 
+/// An error talking to the os_rot driver.
 #[derive(Debug, thiserror::Error)]
-pub enum OsRotError {
-    #[error("failed to open os_rot device")]
+#[non_exhaustive]
+pub enum Error {
+    #[error("failed to open os_rot device `{}`", ffi::OS_ROT_DEV)]
     DevicePath(#[source] std::io::Error),
-
-    #[error("the number of measurement logs changed between ioctl calls")]
-    LogSizeChanged,
-
-    #[error("the number of certs changed between ioctl calls")]
-    CertSizeChanged,
-
-    #[error("OS_ROT_IOC_GET_LOG ioctl call failed: {errno}")]
-    GetLogsIoctl { errno: rustix::io::Errno },
 
     #[error("OS_ROT_IOC_GET_CERTS ioctl call failed: {errno}")]
     GetCertsIoctl { errno: rustix::io::Errno },
+
+    #[error("cert chain size changed, retry request")]
+    CertChainSize,
 
     #[error("OS_ROT_IOC_ATTEST ioctl call failed: {errno}")]
     AttestIoctl { errno: rustix::io::Errno },
@@ -47,8 +44,53 @@ pub enum OsRotError {
     #[error("flexible array layout overflowed")]
     LayoutOverflow,
 
-    #[error("kernel reported an implausibly large size: {requested} bytes")]
+    #[error(
+        "kernel reported an implausibly large size: {requested} bytes \
+         (limit {} bytes)",
+        crate::flexible::MAX_FLEXIBLE_BYTES
+    )]
     TooLarge { requested: usize },
+
+    #[error(transparent)]
+    RotError(#[from] OsRotErrorCode),
+}
+
+/// An `os_rot_error_t` value reported by the driver in the error field of an
+/// ioctl struct.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum OsRotErrorCode {
+    /// Not enough space to write result, the necessary size is returned
+    /// (e.g., as `osrc_chain_size` in `os_rot_certs_t`).
+    #[error("bad buffer size")]
+    Size,
+
+    /// Encountered an unexpected DPE error.
+    #[error("DPE operation failed")]
+    Dpe,
+
+    /// No DPE provider backing the driver is available (yet).  The DPE
+    /// provider driver attaches asynchronously relative to os_rot; the
+    /// caller may retry later.
+    #[error("no DPE provider is available (yet)")]
+    NoProvider,
+
+    /// Unknown error from the driver, note that the driver is free to add new
+    /// enum members in the future to `os_rot_error_t`.
+    #[error("unknown os_rot error: {0}")]
+    Unknown(u32),
+}
+
+impl RawOsRotError {
+    fn check_err(&self) -> Result<(), OsRotErrorCode> {
+        match self.0 {
+            ffi::OS_ROT_E_OK => Ok(()),
+            ffi::OS_ROT_E_SIZE => Err(OsRotErrorCode::Size),
+            ffi::OS_ROT_E_DPE => Err(OsRotErrorCode::Dpe),
+            ffi::OS_ROT_E_NO_PROVIDER => Err(OsRotErrorCode::NoProvider),
+            _ => Err(OsRotErrorCode::Unknown(self.0)),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -57,38 +99,11 @@ pub struct OsRotHandle {
 }
 
 impl OsRotHandle {
-    pub fn new() -> Result<Self, OsRotError> {
-        let dev = std::fs::File::open(ffi::OS_ROT_DEV)
-            .map_err(OsRotError::DevicePath)?;
+    pub fn new() -> Result<Self, Error> {
+        let dev =
+            std::fs::File::open(ffi::OS_ROT_DEV).map_err(Error::DevicePath)?;
 
         Ok(Self { fd: dev.into() })
-    }
-
-    /// Retrieve the measurement log: the current set of SHA2-384 digests
-    /// recorded by the RoT.
-    ///
-    /// The driver is first queried with a zero-length buffer to learn how many
-    /// measurements are currently recorded, then queried again with a buffer
-    /// sized to hold exactly that many entries.
-    pub fn get_logs(&self) -> Result<Vec<Vec<u8>>, OsRotError> {
-        let mut probe: Box<OsRotLog> = alloc_flexible_struct(0)?;
-
-        unsafe {
-            ioctl(&self.fd, GetLog(&mut probe))
-                .map_err(|e| OsRotError::GetLogsIoctl { errno: e })?;
-        }
-
-        // Kernel-reported number of measurement log entries.
-        let probe_count = probe.count;
-        let mut logs: Box<OsRotLog> = alloc_flexible_struct(probe_count)?;
-
-        match unsafe { ioctl(&self.fd, GetLog(&mut logs)) } {
-            Ok(_) => Ok(logs.measurement_hashes()),
-            Err(e) if e == rustix::io::Errno::NOSPC => {
-                Err(OsRotError::LogSizeChanged)
-            }
-            Err(e) => Err(OsRotError::GetLogsIoctl { errno: e }),
-        }
     }
 
     /// Retrieve the certificate chain that links the RoT's attestation signing
@@ -97,13 +112,15 @@ impl OsRotHandle {
     /// The driver is first queried with a zero-length buffer to learn the
     /// required chain size, then queried again with a buffer of that size to
     /// receive the chain data.
-    pub fn get_certs(&self) -> Result<Vec<u8>, OsRotError> {
+    pub fn get_certs(&self) -> Result<Vec<u8>, Error> {
         let mut probe: Box<OsRotCerts> = alloc_flexible_struct(0)?;
 
         unsafe {
             ioctl(&self.fd, GetCerts(&mut probe))
-                .map_err(|e| OsRotError::GetCertsIoctl { errno: e })?;
+                .map_err(|e| Error::GetCertsIoctl { errno: e })?;
         }
+
+        probe.error.check_err()?;
 
         // Kernel-reported certificate chain size, in bytes.
         let probe_chain_size = probe.chain_size;
@@ -111,108 +128,88 @@ impl OsRotHandle {
             alloc_flexible_struct(probe_chain_size)?;
 
         match unsafe { ioctl(&self.fd, GetCerts(&mut certs)) } {
-            Ok(_) => Ok(certs.chain_bytes()),
-            Err(e) if e == rustix::io::Errno::NOSPC => {
-                Err(OsRotError::CertSizeChanged)
-            }
-            Err(e) => Err(OsRotError::GetCertsIoctl { errno: e }),
+            Ok(_) => match certs.chain_bytes() {
+                Err(Error::RotError(OsRotErrorCode::Size)) => {
+                    Err(Error::CertChainSize)
+                }
+                res => res,
+            },
+            Err(e) => Err(Error::GetCertsIoctl { errno: e }),
         }
     }
 
-    /// Attest over the current measurement log, binding it to `nonce` for
+    /// Attest over the current set of measurements, using `nonce` for
     /// freshness, and return the resulting signature.
     ///
-    /// The driver signs `SHA384(log || nonce)`, so the returned signature lets
-    /// a verifier confirm both the measurements and the freshness of the
-    /// attestation in a single verification.
+    /// The driver signs the SHA2-384 digest of `nonce`, which should be
+    /// random.
     pub fn attest(
         &self,
         nonce: &[u8; OS_ROT_HASH_SIZE],
-    ) -> Result<Vec<u8>, OsRotError> {
-        let mut attest =
-            OsRotAttest { nonce: *nonce, sig: [0u8; OS_ROT_SIG_SIZE] };
+    ) -> Result<Vec<u8>, Error> {
+        let mut attest = OsRotAttest {
+            error: RawOsRotError(0),
+            nonce: *nonce,
+            sig: [0u8; OS_ROT_SIG_SIZE],
+        };
 
         match unsafe { ioctl(&self.fd, Attest(&mut attest)) } {
-            Ok(_) => Ok(attest.sig.to_vec()),
-            Err(e) => Err(OsRotError::AttestIoctl { errno: e }),
+            Ok(_) => {
+                attest.error.check_err()?;
+                Ok(attest.sig.to_vec())
+            }
+            Err(e) => Err(Error::AttestIoctl { errno: e }),
         }
-    }
-}
-
-impl OsRotLog {
-    /// Collect the measurement hashes the driver wrote into this buffer.
-    fn measurement_hashes(&self) -> Vec<Vec<u8>> {
-        let capacity = self.measurements.len();
-        let num_items = usize::try_from(self.count)
-            .expect("usize is at least 32 bits wide");
-        assert!(num_items <= capacity,);
-
-        self.measurements[..num_items]
-            .iter()
-            .map(|m| Vec::from(m.hash))
-            .collect()
     }
 }
 
 impl OsRotCerts {
     /// Copy out the certificate chain bytes the driver wrote into this buffer.
-    fn chain_bytes(&self) -> Vec<u8> {
+    fn chain_bytes(&self) -> Result<Vec<u8>, Error> {
+        self.error.check_err()?;
         let capacity = self.chain.len();
         let num_items = usize::try_from(self.chain_size)
             .expect("usize is at least 32 bits wide");
-        assert!(num_items <= capacity,);
+        assert!(
+            num_items <= capacity,
+            "driver reported {num_items} chain bytes in a {capacity} byte \
+             buffer"
+        );
 
-        self.chain[..num_items].to_vec()
+        Ok(self.chain[..num_items].to_vec())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::ffi::{OS_ROT_HASH_SIZE, OsRotCerts, OsRotLog};
-    use crate::flexible::alloc_flexible_struct;
-
-    fn fill_log(capacity: u32, reported: u32) -> Box<OsRotLog> {
-        let mut log: Box<OsRotLog> = alloc_flexible_struct(capacity).unwrap();
-        log.count = reported;
-        let n = (reported as usize).min(log.measurements.len());
-        for i in 0..n {
-            log.measurements[i].hash = [i as u8 + 1; OS_ROT_HASH_SIZE];
-        }
-        log
-    }
-
-    #[test]
-    fn measurement_hashes_returns_reported_entries() {
-        // Kernel filled 3 of the 4 slots we allocated.
-        let log = fill_log(4, 3);
-        let hashes = log.measurement_hashes();
-        assert_eq!(hashes.len(), 3);
-        for (i, h) in hashes.iter().enumerate() {
-            assert_eq!(h.as_slice(), [i as u8 + 1; OS_ROT_HASH_SIZE]);
-        }
-    }
-
-    #[test]
-    fn measurement_hashes_empty_log() {
-        let log = fill_log(0, 0);
-        assert!(log.measurement_hashes().is_empty());
-    }
-
-    #[test]
-    #[should_panic]
-    fn measurement_hashes_over_report_aborts() {
-        // Simulate the kernel filling in 2 slots but saying there are 3
-        // available.
-        let log = fill_log(2, 3);
-        let _ = log.measurement_hashes();
-    }
+    use super::*;
+    use crate::ffi::OsRotCerts;
 
     #[test]
     fn chain_bytes_returns_reported_prefix() {
         let mut certs: Box<OsRotCerts> = alloc_flexible_struct(8).unwrap();
         certs.chain_size = 3;
         certs.chain[..3].copy_from_slice(&[0xAA, 0xBB, 0xCC]);
-        assert_eq!(certs.chain_bytes(), vec![0xAA, 0xBB, 0xCC]);
+        assert_eq!(certs.chain_bytes().unwrap(), vec![0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn chain_bytes_empty_chain() {
+        let certs: Box<OsRotCerts> = alloc_flexible_struct(0).unwrap();
+        assert!(certs.chain_bytes().unwrap().is_empty());
+    }
+
+    // The driver reports failures in the error field rather than through errno.
+    #[test]
+    fn chain_bytes_surfaces_driver_error() {
+        let mut certs: Box<OsRotCerts> = alloc_flexible_struct(8).unwrap();
+        certs.error = RawOsRotError(3);
+        certs.chain_size = 3;
+
+        assert!(matches!(
+            certs.chain_bytes(),
+            Err(Error::RotError(OsRotErrorCode::NoProvider))
+        ));
     }
 
     #[test]
