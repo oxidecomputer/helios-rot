@@ -35,7 +35,7 @@ const MAX_FLEXIBLE_BYTES: usize = 16 * 1024 * 1024;
 ///   `Layout::new::<u32>().extend(Layout::array::<Self::Item>(n)).pad_to_align()`
 ///   for every `n`, so the `Box`'s drop frees the same layout that was
 ///   allocated.
-/// - [`Self::from_slice_ptr`] reinterprets the input pointer as `Self`. Both
+/// - [`Self::repair_vtable`] reinterprets the input pointer as `Self`. Both
 ///   pointers are "fat pointers" that contain an address and length so rust
 ///   allows us to "cast" between them, however attempting to use one type as
 ///   the other would be undefined behavior. This "fat pointer"/layout is used
@@ -75,8 +75,12 @@ pub(crate) unsafe trait FlexibleArrayMember {
     type Item;
 
     /// Reinterpret a slice pointer as a pointer to `Self`, preserving its
-    /// address and length metadata.
-    fn from_slice_ptr(p: *mut [Self::Item]) -> *mut Self;
+    /// address and length metadata. This implementation should *always* be
+    /// `p as *mut Self`.
+    ///
+    /// NB: we don't have a default implementation in this trait because Rust's
+    /// type system won't let us.
+    fn repair_vtable(p: *mut [Self::Item]) -> *mut Self;
 }
 
 pub(crate) fn alloc_flexible_struct<D>(
@@ -106,32 +110,40 @@ where
         (raw as *mut u32).write(capacity);
     }
 
-    let slice_ptr = std::ptr::slice_from_raw_parts_mut(
+    // This line should bring the most concern to future readers so let me
+    // explain what is going on. As of stable rust 1.97.1 there is no way to set
+    // the length of a fat pointer, so we are casting from one fat pointer to
+    // another which rust happily lets us do even though the data ptr points
+    // at different things between our types. So we create the slice of
+    // `*mut [D::Item]` and abuse it by then casting it back to `*mut Self`.
+    // One can use `std::mem::size_of_val_raw` with nightly rust to confirm the
+    // right thing happens.
+    let dst_ptr = D::repair_vtable(std::ptr::slice_from_raw_parts_mut(
         raw as *mut D::Item,
         capacity as usize,
-    );
-    let dst_ptr = D::from_slice_ptr(slice_ptr);
+    ));
 
     // SAFETY: dst_ptr matches the layout Box::drop will compute from
     // the fat pointer's metadata.
     Ok(unsafe { Box::from_raw(dst_ptr) })
 }
 
-unsafe impl FlexibleArrayMember for OsRotLog {
-    type Item = OsRotMeasurement;
+/// Implements [`FlexibleArrayMember`] for a given `#[repr(C)]` struct.
+macro_rules! impl_flex {
+    ($struct:ty, $item:ty) => {
+        unsafe impl FlexibleArrayMember for $struct {
+            type Item = $item;
 
-    fn from_slice_ptr(p: *mut [Self::Item]) -> *mut Self {
-        p as *mut Self
-    }
+            fn repair_vtable(p: *mut [Self::Item]) -> *mut Self {
+                p as *mut Self
+            }
+        }
+    };
 }
 
-unsafe impl FlexibleArrayMember for OsRotCerts {
-    type Item = u8;
-
-    fn from_slice_ptr(p: *mut [Self::Item]) -> *mut Self {
-        p as *mut Self
-    }
-}
+// This is the preferred way implementations should be defined in this crate.
+impl_flex!(OsRotLog, OsRotMeasurement);
+impl_flex!(OsRotCerts, u8);
 
 #[cfg(test)]
 mod tests {
