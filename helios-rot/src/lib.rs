@@ -142,15 +142,16 @@ impl HeliosOsRot {
     }
 }
 
+#[async_trait::async_trait]
 impl HeliosRot for HeliosOsRot {
     type Error = HeliosOsRotError;
 
-    fn get_certificates(&self) -> Result<PkiPath, Self::Error> {
+    async fn get_certificates(&self) -> Result<PkiPath, Self::Error> {
         let raw = self.handle.get_certs()?;
         Ok(Certificate::load_pem_chain(&raw)?)
     }
 
-    fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error> {
+    async fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error> {
         let Nonce::N48(nonce) = nonce;
         let raw = self.handle.attest(&nonce.0)?;
         let sig = P384Signature::from(raw.as_slice().try_into()?);
