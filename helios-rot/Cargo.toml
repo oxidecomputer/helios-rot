@@ -1,0 +1,7 @@
+[package]
+name = "helios-rot"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+os-rot.workspace = true

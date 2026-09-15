@@ -1,8 +1,13 @@
-[package]
-name = "os-rot"
+[workspace]
+resolver = "3"
+members = ["helios-rot", "os-rot"]
+default-members = ["helios-rot", "os-rot"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
+os-rot = { path = "os-rot" }
 rustix = "1.1.4"
 thiserror = "2.0.18"

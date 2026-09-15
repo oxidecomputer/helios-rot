@@ -1,0 +1,8 @@
+[package]
+name = "os-rot"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rustix.workspace = true
+thiserror.workspace = true
