@@ -18,7 +18,10 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
-use x509_cert::{Certificate, PkiPath, der};
+use x509_cert::{
+    Certificate, PkiPath,
+    der::{self, Reader},
+};
 
 const SIGNATURE_SIZE: usize =
     core::mem::size_of::<<Signature as SignatureEncoding>::Repr>();
@@ -153,13 +156,24 @@ impl HeliosOsRot {
     }
 }
 
+/// Parse the certificate chain returned by the os_rot driver, which is a
+/// concatenation of DER-encoded certificates.
+fn load_der_chain(raw: &[u8]) -> Result<PkiPath, der::Error> {
+    let mut reader = der::SliceReader::new(raw)?;
+    let mut certs = PkiPath::new();
+    while !reader.is_finished() {
+        certs.push(reader.decode()?);
+    }
+    Ok(certs)
+}
+
 #[async_trait::async_trait]
 impl HeliosRot for HeliosOsRot {
     type Error = HeliosOsRotError;
 
     async fn get_certificates(&self) -> Result<PkiPath, Self::Error> {
         let raw = self.do_rot_request(|handle| handle.get_certs()).await?;
-        Ok(Certificate::load_pem_chain(&raw)?)
+        Ok(load_der_chain(&raw)?)
     }
 
     async fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error> {
@@ -250,6 +264,41 @@ impl HeliosRot for HeliosRotMock {
 mod test {
     use crate::*;
     use std::env;
+    use x509_cert::der::Encode;
+
+    const ROOT_CERT_PEM: &str =
+        include_str!(concat!(env!("OUT_DIR"), "/root.cert.pem"));
+
+    /// Build a chain of `count` root certs as concatenated DER, the format
+    /// returned by the os_rot driver.
+    fn der_chain(count: usize) -> (PkiPath, Vec<u8>) {
+        let cert = Certificate::load_pem_chain(ROOT_CERT_PEM.as_bytes())
+            .expect("load root cert")
+            .remove(0);
+        let certs = vec![cert; count];
+        let mut raw = Vec::new();
+        for cert in &certs {
+            cert.encode_to_vec(&mut raw).expect("encode cert as DER");
+        }
+        (certs, raw)
+    }
+
+    #[test]
+    fn load_der_chain_success() {
+        let (certs, raw) = der_chain(2);
+        assert_eq!(load_der_chain(&raw).expect("load DER chain"), certs);
+    }
+
+    #[test]
+    fn load_der_chain_empty() {
+        assert!(load_der_chain(&[]).expect("load empty chain").is_empty());
+    }
+
+    #[test]
+    fn load_der_chain_truncated() {
+        let (_, raw) = der_chain(2);
+        assert!(load_der_chain(&raw[..raw.len() - 1]).is_err());
+    }
 
     #[test]
     fn bad_path_to_key() {
