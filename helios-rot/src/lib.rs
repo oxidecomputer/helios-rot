@@ -303,14 +303,26 @@ mod test {
 
     #[test]
     fn bad_path_to_key() {
-        let res = HeliosRotMock::load("root.cert.pem", "foo");
-        assert!(res.is_err());
+        let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+        let cert_chain = out.join("root.cert.pem");
+
+        let res = HeliosRotMock::load(&cert_chain, "foo");
+        assert!(matches!(
+            res,
+            Err(HeliosRotMockError::FileRead { path, .. }) if path == Path::new("foo")
+        ));
     }
 
     #[test]
     fn bad_path_to_certs() {
-        let res = HeliosRotMock::load("foo", "root.key.pem");
-        assert!(res.is_err());
+        let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+        let key = out.join("root.key.pem");
+
+        let res = HeliosRotMock::load("foo", &key);
+        assert!(matches!(
+            res,
+            Err(HeliosRotMockError::FileRead { path, .. }) if path == Path::new("foo")
+        ));
     }
 
     #[test]
