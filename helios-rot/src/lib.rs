@@ -28,8 +28,8 @@ const SIGNATURE_SIZE: usize =
 
 #[derive(Debug, Error)]
 pub enum ArrayError {
-    #[error("Slice is not 96 bytes")]
-    TryFromSliceError,
+    #[error("slice is {actual} bytes, expected {expected}")]
+    TryFromSliceError { expected: usize, actual: usize },
 }
 
 #[serde_as]
@@ -51,8 +51,9 @@ impl<const N: usize> TryFrom<&[u8]> for Array<N> {
 
     /// Attempt to create an `Array<N>` from the slice provided.
     fn try_from(item: &[u8]) -> Result<Self, Self::Error> {
-        let item: [u8; N] =
-            item.try_into().map_err(|_| Self::Error::TryFromSliceError)?;
+        let item: [u8; N] = item.try_into().map_err(|_| {
+            Self::Error::TryFromSliceError { expected: N, actual: item.len() }
+        })?;
         Ok(Array::<N>(item))
     }
 }
@@ -125,10 +126,10 @@ pub enum HeliosOsRotError {
     #[error("OS RoT error")]
     OsRotError(#[from] os_rot::Error),
 
-    #[error("Failed to load certificate chain")]
+    #[error("Failed to decode DER certificate chain from OS RoT")]
     DerError(#[from] der::Error),
 
-    #[error("Signature isn't 96 bytes")]
+    #[error("Invalid attestation signature from OS RoT")]
     SignatureSize(#[from] ArrayError),
 }
 
@@ -187,9 +188,9 @@ impl HeliosRot for HeliosOsRot {
 
 #[derive(Debug, Error)]
 pub enum HeliosRotMockError {
-    #[error("Failed to load certificate chain")]
+    #[error("Failed to decode PEM certificate chain")]
     DerError(#[from] der::Error),
-    #[error("Failed to load certificate chain from {}", path.display())]
+    #[error("Failed to read {}", path.display())]
     FileRead {
         path: PathBuf,
         #[source]
@@ -201,9 +202,9 @@ pub enum HeliosRotMockError {
         #[source]
         error: pkcs8::Error,
     },
-    #[error("Signature isn't 96 bytes")]
+    #[error("Invalid attestation signature")]
     SignatureSize(#[from] ArrayError),
-    #[error("Signature isn't 96 bytes")]
+    #[error("Failed to sign nonce")]
     SigningError(#[from] ecdsa::Error),
 }
 
