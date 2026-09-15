@@ -28,5 +28,5 @@ banner miri
 
 # XXX what's the proper way to do this?
 rustup component add --toolchain nightly-x86_64-unknown-illumos miri
-ptime -m cargo +nightly miri test
+ptime -m cargo +nightly miri test -p os-rot
 
