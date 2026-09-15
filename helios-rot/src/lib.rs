@@ -94,7 +94,7 @@ pub enum Nonce {
 
 impl Nonce {
     pub fn from_platform_rng(len: usize) -> Result<Self, NonceError> {
-        // We currently only support 32-byte Nonce's
+        // We currently only support 48-byte nonces
         if len != Nonce48::LENGTH {
             return Err(NonceError::UnsupportedLength);
         }
@@ -150,7 +150,8 @@ impl HeliosOsRot {
         F: FnOnce(&OsRotHandle) -> Result<T, os_rot::Error> + Send + 'static,
     {
         // We use `spawn_blocking` here because each request to the underlying
-        // OS RoT is preformed via an IOCTL.
+        // OS RoT is a synchronous IOCTL, which will block while the PSP
+        // services it.
         let handle = Arc::clone(&self.handle);
         let req = tokio::task::spawn_blocking(move || request(&handle));
         req.await.expect("handle is not aborted, and we propagate panics")
