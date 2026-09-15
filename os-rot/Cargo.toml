@@ -5,4 +5,4 @@ edition.workspace = true
 
 [dependencies]
 rustix.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }

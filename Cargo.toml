@@ -8,6 +8,17 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
+anyhow = { version = "1.0.103", default-features = false }
+async-trait = "0.1.89"
+cfg-if.version = "1.0.4"
+der = { version = "0.7.10", default-features = false }
+getrandom = "0.4.3"
 os-rot = { path = "os-rot" }
+p384 = { version = "0.13.1", default-features = false }
+pki-playground = { git = "https://github.com/oxidecomputer/pki-playground", rev = "98865b0f4716c52adcb6d940fdb8c3ab90ad409a" }
 rustix = "1.1.4"
-thiserror = "2.0.18"
+serde = { version = "1.0.228", default-features = false }
+serde_with = { version = "3.21.0", default-features = false }
+thiserror = { version = "2.0.18", default-features = false }
+tokio = { version = "1.47", default-features = false }
+x509-cert = { version = "0.2.5", default-features = false }
