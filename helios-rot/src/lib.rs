@@ -15,6 +15,7 @@ use serde_with::serde_as;
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use thiserror::Error;
 use x509_cert::{Certificate, PkiPath, der};
@@ -47,9 +48,8 @@ impl<const N: usize> TryFrom<&[u8]> for Array<N> {
 
     /// Attempt to create an `Array<N>` from the slice provided.
     fn try_from(item: &[u8]) -> Result<Self, Self::Error> {
-        let item: [u8; N] = item
-            .try_into()
-            .map_err(|_| Self::Error::TryFromSliceError)?;
+        let item: [u8; N] =
+            item.try_into().map_err(|_| Self::Error::TryFromSliceError)?;
         Ok(Array::<N>(item))
     }
 }
@@ -131,14 +131,25 @@ pub enum HeliosOsRotError {
 
 #[derive(Debug)]
 pub struct HeliosOsRot {
-    handle: OsRotHandle,
+    handle: Arc<OsRotHandle>,
 }
 
 impl HeliosOsRot {
+    /// Creates a new `HeliosOsRot` instance, opening the os_rot device.
     pub fn new() -> Result<Self, HeliosOsRotError> {
-        Ok(Self {
-            handle: os_rot::OsRotHandle::new()?,
-        })
+        Ok(Self { handle: Arc::new(OsRotHandle::new()?) })
+    }
+
+    async fn do_rot_request<T, F>(&self, request: F) -> Result<T, os_rot::Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(&OsRotHandle) -> Result<T, os_rot::Error> + Send + 'static,
+    {
+        // We use `spawn_blocking` here because each request to the underlying
+        // OS RoT is preformed via an IOCTL.
+        let handle = Arc::clone(&self.handle);
+        let req = tokio::task::spawn_blocking(move || request(&handle));
+        req.await.expect("handle is not aborted, and we propagate panics")
     }
 }
 
@@ -147,13 +158,14 @@ impl HeliosRot for HeliosOsRot {
     type Error = HeliosOsRotError;
 
     async fn get_certificates(&self) -> Result<PkiPath, Self::Error> {
-        let raw = self.handle.get_certs()?;
+        let raw = self.do_rot_request(|handle| handle.get_certs()).await?;
         Ok(Certificate::load_pem_chain(&raw)?)
     }
 
     async fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error> {
-        let Nonce::N48(nonce) = nonce;
-        let raw = self.handle.attest(&nonce.0)?;
+        let Nonce::N48(nonce) = *nonce;
+        let raw =
+            self.do_rot_request(move |handle| handle.attest(&nonce.0)).await?;
         let sig = P384Signature::from(raw.as_slice().try_into()?);
         Ok(Attestation::P384(sig))
     }

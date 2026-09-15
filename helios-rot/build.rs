@@ -24,14 +24,12 @@ fn pki_setup() -> Result<()> {
 
     doc.write_key_pairs(&out, OutputFileExistsBehavior::Skip)
         .map_err(|e| anyhow!("write key pairs to {}: {e:?}", out.display()))?;
-    doc.write_certificates(&out, OutputFileExistsBehavior::Skip)
-        .map_err(|e| {
-            anyhow!("write certificates to {}: {e:?}", out.display())
-        })?;
-    doc.write_certificate_lists(&out, OutputFileExistsBehavior::Skip)
-        .map_err(|e| {
-            anyhow!("write certificate chains to {}: {e:?}", out.display())
-        })?;
+    doc.write_certificates(&out, OutputFileExistsBehavior::Skip).map_err(
+        |e| anyhow!("write certificates to {}: {e:?}", out.display()),
+    )?;
+    doc.write_certificate_lists(&out, OutputFileExistsBehavior::Skip).map_err(
+        |e| anyhow!("write certificate chains to {}: {e:?}", out.display()),
+    )?;
 
     Ok(())
 }
