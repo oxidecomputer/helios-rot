@@ -18,18 +18,20 @@ fn pki_setup() -> Result<()> {
         PathBuf::from(env::var("OUT_DIR").context("Failed to get OUT_DIR")?);
 
     let config_path = "test-pki.kdl";
+    println!("cargo::rerun-if-changed={config_path}");
     let doc = config::load_and_validate(config_path).map_err(|e| {
         anyhow!("Loading config from \"{}\" failed: {e:?}", config_path)
     })?;
 
-    doc.write_key_pairs(&out, OutputFileExistsBehavior::Skip)
+    doc.write_key_pairs(&out, OutputFileExistsBehavior::Overwrite)
         .map_err(|e| anyhow!("write key pairs to {}: {e:?}", out.display()))?;
-    doc.write_certificates(&out, OutputFileExistsBehavior::Skip).map_err(
+    doc.write_certificates(&out, OutputFileExistsBehavior::Overwrite).map_err(
         |e| anyhow!("write certificates to {}: {e:?}", out.display()),
     )?;
-    doc.write_certificate_lists(&out, OutputFileExistsBehavior::Skip).map_err(
-        |e| anyhow!("write certificate chains to {}: {e:?}", out.display()),
-    )?;
+    doc.write_certificate_lists(&out, OutputFileExistsBehavior::Overwrite)
+        .map_err(|e| {
+            anyhow!("write certificate chains to {}: {e:?}", out.display())
+        })?;
 
     Ok(())
 }
