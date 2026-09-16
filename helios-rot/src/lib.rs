@@ -112,6 +112,16 @@ impl AsRef<[u8]> for Nonce {
     }
 }
 
+impl TryFrom<&[u8]> for Nonce {
+    type Error = NonceError;
+
+    fn try_from(item: &[u8]) -> Result<Self, Self::Error> {
+        Nonce48::try_from(item)
+            .map(Nonce::N48)
+            .map_err(|_| NonceError::UnsupportedLength)
+    }
+}
+
 /// The `HeliosRot` trait is the interface to the roT in the Helios kernel.
 #[async_trait::async_trait]
 pub trait HeliosRot {
