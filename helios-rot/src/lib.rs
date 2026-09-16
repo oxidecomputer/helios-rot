@@ -61,6 +61,7 @@ impl<const N: usize> TryFrom<&[u8]> for Array<N> {
 pub type P384Signature = Array<SIGNATURE_SIZE>;
 
 /// An attestation from the Helios Rot
+#[derive(Debug, Deserialize, Serialize)]
 pub enum Attestation {
     P384(P384Signature),
 }
@@ -85,7 +86,7 @@ pub type Nonce48 = Array<48>;
     // `Nonce48`/`Array<48>`) rather than this more generic `Nonce` type.
     // To prevent accidentally accepting this type where it currently shouldn't
     // be accepted, we omit these for now until hubris#2375 is fixed.
-    // Serialize, SerializedSize,
+    Serialize,
 )]
 pub enum Nonce {
     /// A 48-byte Nonce value.
