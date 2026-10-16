@@ -126,10 +126,63 @@ impl TryFrom<&[u8]> for Nonce {
 /// The `HeliosRot` trait is the interface to the roT in the Helios kernel.
 #[async_trait::async_trait]
 pub trait HeliosRot {
-    type Error: std::error::Error + Send + Sync;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     async fn get_certificates(&self) -> Result<PkiPath, Self::Error>;
     async fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error>;
+}
+
+/// `DynHeliosRotError` is returned by `DynHeliosRot` as a way to erase the
+/// type of errors from the underlying implementation
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct DynHeliosRotError(Box<dyn std::error::Error + Send + Sync>);
+
+/// `DynHeliosRot` is a dyn-compatible version of the `HeliosRot` trait. To be
+/// dyn-compatible, this trait erases the error type from the underlying
+/// `HeliosRot` impl. Implementers of `HeliosRot` get this trait for free.
+#[async_trait::async_trait]
+pub trait DynHeliosRot: Send + Sync {
+    async fn dyn_get_certificates(&self) -> Result<PkiPath, DynHeliosRotError>;
+    async fn dyn_attest(
+        &self,
+        nonce: &Nonce,
+    ) -> Result<Attestation, DynHeliosRotError>;
+}
+
+/// Free impl of `DynHeliosRot` for all types that implement `HeliosRot` and are
+/// both `Send` & `Sync`.
+#[async_trait::async_trait]
+impl<T: HeliosRot + Send + Sync> DynHeliosRot for T {
+    async fn dyn_get_certificates(&self) -> Result<PkiPath, DynHeliosRotError> {
+        HeliosRot::get_certificates(self)
+            .await
+            .map_err(|e| DynHeliosRotError(Box::new(e)))
+    }
+
+    async fn dyn_attest(
+        &self,
+        nonce: &Nonce,
+    ) -> Result<Attestation, DynHeliosRotError> {
+        HeliosRot::attest(self, nonce)
+            .await
+            .map_err(|e| DynHeliosRotError(Box::new(e)))
+    }
+}
+
+/// Implementing `HeliosRot` for `dyn DynHeliosRot` allows consumers to use a
+/// `Box<dyn DynHeliosRot>` in contexts that expect `HeliosRot`.
+#[async_trait::async_trait]
+impl HeliosRot for dyn DynHeliosRot {
+    type Error = DynHeliosRotError;
+
+    async fn get_certificates(&self) -> Result<PkiPath, Self::Error> {
+        self.dyn_get_certificates().await
+    }
+
+    async fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error> {
+        self.dyn_attest(nonce).await
+    }
 }
 
 #[derive(Debug, Error)]
@@ -371,6 +424,31 @@ mod test {
                 let ret = verifying_key.verify(nonce.as_ref(), &sig);
                 assert!(ret.is_ok());
             }
+        }
+    }
+
+    // This test ensures that implementers of the `DynHeliosRot` trait can be
+    // used for dynamic dispatch. This test shouldn't fail when executed but if
+    // code in this crate breaks this contract it should fail to compile.
+    #[tokio::test]
+    async fn box_dyn() {
+        let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+        let signing_key = out.join("root.key.pem");
+
+        let dyn_rots: Vec<Box<dyn DynHeliosRot>> = vec![
+            Box::new(
+                HeliosRotMock::load(out.join("root.cert.pem"), &signing_key)
+                    .expect("load cert chain & key"),
+            ),
+            Box::new(
+                HeliosRotMock::load(out.join("root.cert.pem"), &signing_key)
+                    .expect("load cert chain & key"),
+            ),
+        ];
+
+        for rot in &dyn_rots {
+            let certs = rot.get_certificates().await.expect("get certs");
+            assert!(!certs.is_empty());
         }
     }
 }
