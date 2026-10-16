@@ -15,7 +15,6 @@ use serde_with::serde_as;
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 use thiserror::Error;
 use x509_cert::{
@@ -144,17 +143,10 @@ pub enum HeliosOsRotError {
     SignatureSize(#[from] ArrayError),
 }
 
-#[derive(Debug)]
-pub struct HeliosOsRot {
-    handle: Arc<OsRotHandle>,
-}
+#[derive(Debug, Default)]
+pub struct HeliosOsRot {}
 
 impl HeliosOsRot {
-    /// Creates a new `HeliosOsRot` instance, opening the os_rot device.
-    pub fn new() -> Result<Self, HeliosOsRotError> {
-        Ok(Self { handle: Arc::new(OsRotHandle::new()?) })
-    }
-
     async fn do_rot_request<T, F>(&self, request: F) -> Result<T, os_rot::Error>
     where
         T: Send + 'static,
@@ -163,8 +155,7 @@ impl HeliosOsRot {
         // We use `spawn_blocking` here because each request to the underlying
         // OS RoT is a synchronous IOCTL, which will block while the PSP
         // services it.
-        let handle = Arc::clone(&self.handle);
-        let req = tokio::task::spawn_blocking(move || request(&handle));
+        let req = tokio::task::spawn_blocking(|| request(&OsRotHandle::new()?));
         req.await.expect("handle is not aborted, and we propagate panics")
     }
 }
