@@ -22,6 +22,11 @@ use x509_cert::{
     der::{self, Reader},
 };
 
+#[cfg(feature = "sled-agent")]
+mod sled_agent;
+#[cfg(feature = "sled-agent")]
+pub use sled_agent::{HeliosRotSledAgent, HeliosRotSledAgentError};
+
 const SIGNATURE_SIZE: usize =
     core::mem::size_of::<<Signature as SignatureEncoding>::Repr>();
 
@@ -42,6 +47,12 @@ impl<const N: usize> Array<N> {
 impl<const N: usize> AsRef<[u8]> for Array<N> {
     fn as_ref(&self) -> &[u8] {
         &self.0[..]
+    }
+}
+
+impl<const N: usize> From<[u8; N]> for Array<N> {
+    fn from(item: [u8; N]) -> Self {
+        Self(item)
     }
 }
 

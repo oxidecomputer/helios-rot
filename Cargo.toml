@@ -19,6 +19,12 @@ pki-playground = { git = "https://github.com/oxidecomputer/pki-playground", rev 
 rustix = "1.1.4"
 serde = { version = "1.0.228", default-features = false }
 serde_with = { version = "3.21.0", default-features = false }
+
+# DO NOT MERGE: these must point to the main omicron branch
+sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "flihp/sa-helios-rot" }
+sled-agent-types-versions = { git = "https://github.com/oxidecomputer/omicron", branch = "flihp/sa-helios-rot" }
+
+slog = { version = "2.8.2", default-features = false }
 thiserror = { version = "2.0.18", default-features = false }
 tokio = { version = "1.47", default-features = false }
 x509-cert = { version = "0.2.5", default-features = false }
