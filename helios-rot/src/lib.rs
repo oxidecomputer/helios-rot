@@ -67,14 +67,14 @@ pub enum Attestation {
 }
 
 #[derive(Debug, Error)]
-pub enum NonceError {
-    #[error("Only 48 byte Nonces are supported")]
+pub enum QualifyingDataError {
+    #[error("Only 48 byte QualifyingDatas are supported")]
     UnsupportedLength,
     #[error("Failed to pull 48 bytes from getrandom")]
     Rng(#[from] getrandom::Error),
 }
 
-pub type Nonce48 = Array<48>;
+pub type QualifyingData48 = Array<48>;
 
 #[derive(
     Copy,
@@ -82,44 +82,45 @@ pub type Nonce48 = Array<48>;
     Debug,
     Deserialize,
     PartialEq,
-    // The current RoT Attest API takes the nonce bytes directly (i.e. a
-    // `Nonce48`/`Array<48>`) rather than this more generic `Nonce` type.
+    // The current RoT Attest API takes the qdata bytes directly (i.e. a
+    // `QualifyingData48`/`Array<48>`) rather than this more generic `QualifyingData` type.
     // To prevent accidentally accepting this type where it currently shouldn't
     // be accepted, we omit these for now until hubris#2375 is fixed.
     Serialize,
 )]
-pub enum Nonce {
-    /// A 48-byte Nonce value.
-    N48(Nonce48),
+pub enum QualifyingData {
+    /// A 48-byte QualifyingData value.
+    Q48(QualifyingData48),
 }
 
-impl Nonce {
-    pub fn from_platform_rng(len: usize) -> Result<Self, NonceError> {
-        // We currently only support 48-byte nonces
-        if len != Nonce48::LENGTH {
-            return Err(NonceError::UnsupportedLength);
+impl QualifyingData {
+    pub fn from_platform_rng(len: usize) -> Result<Self, QualifyingDataError> {
+        // We currently only support 48-byte qdatas
+        if len != QualifyingData48::LENGTH {
+            return Err(QualifyingDataError::UnsupportedLength);
         }
-        let mut nonce = Array([0u8; Nonce48::LENGTH]);
-        getrandom::fill(nonce.0.as_mut_slice()).map_err(NonceError::Rng)?;
-        Ok(Nonce::N48(nonce))
+        let mut qdata = Array([0u8; QualifyingData48::LENGTH]);
+        getrandom::fill(qdata.0.as_mut_slice())
+            .map_err(QualifyingDataError::Rng)?;
+        Ok(QualifyingData::Q48(qdata))
     }
 }
 
-impl AsRef<[u8]> for Nonce {
+impl AsRef<[u8]> for QualifyingData {
     fn as_ref(&self) -> &[u8] {
         match self {
-            Nonce::N48(n) => n.as_ref(),
+            QualifyingData::Q48(n) => n.as_ref(),
         }
     }
 }
 
-impl TryFrom<&[u8]> for Nonce {
-    type Error = NonceError;
+impl TryFrom<&[u8]> for QualifyingData {
+    type Error = QualifyingDataError;
 
     fn try_from(item: &[u8]) -> Result<Self, Self::Error> {
-        Nonce48::try_from(item)
-            .map(Nonce::N48)
-            .map_err(|_| NonceError::UnsupportedLength)
+        QualifyingData48::try_from(item)
+            .map(QualifyingData::Q48)
+            .map_err(|_| QualifyingDataError::UnsupportedLength)
     }
 }
 
@@ -129,7 +130,10 @@ pub trait HeliosRot {
     type Error: std::error::Error + Send + Sync;
 
     async fn get_certificates(&self) -> Result<PkiPath, Self::Error>;
-    async fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error>;
+    async fn attest(
+        &self,
+        qdata: &QualifyingData,
+    ) -> Result<Attestation, Self::Error>;
 }
 
 #[derive(Debug, Error)]
@@ -189,11 +193,15 @@ impl HeliosRot for HeliosOsRot {
         Ok(load_der_chain(&raw)?)
     }
 
-    async fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error> {
-        let Nonce::N48(nonce) = *nonce;
-        let raw =
-            self.do_rot_request(move |handle| handle.attest(&nonce.0)).await?;
-        let sig = P384Signature::from(raw.as_slice().try_into()?);
+    async fn attest(
+        &self,
+        qdata: &QualifyingData,
+    ) -> Result<Attestation, Self::Error> {
+        let QualifyingData::Q48(qdata) = *qdata;
+        let raw = self
+            .do_rot_request(move |handle| handle.attest(&qdata.0))
+            .await?;
+        let sig = P384Signature::try_from(raw.as_slice())?;
         Ok(Attestation::P384(sig))
     }
 }
@@ -216,7 +224,7 @@ pub enum HeliosRotMockError {
     },
     #[error("Invalid attestation signature")]
     SignatureSize(#[from] ArrayError),
-    #[error("Failed to sign nonce")]
+    #[error("Failed to sign qdata")]
     SigningError(#[from] ecdsa::Error),
 }
 
@@ -266,9 +274,13 @@ impl HeliosRot for HeliosRotMock {
         Ok(self.certs.clone())
     }
 
-    async fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error> {
-        let sig: Signature = self.alias_key.try_sign(nonce.as_ref())?;
-        let sig = P384Signature::from(sig.to_bytes().as_slice().try_into()?);
+    async fn attest(
+        &self,
+        qdata: &QualifyingData,
+    ) -> Result<Attestation, Self::Error> {
+        let sig: Signature =
+            self.alias_key.try_sign(qdata.as_ref())?;
+        let sig = P384Signature::try_from(sig.to_bytes().as_slice())?;
         Ok(Attestation::P384(sig))
     }
 }
@@ -355,8 +367,12 @@ mod test {
         let mock = HeliosRotMock::load(out.join("root.cert.pem"), &signing_key)
             .expect("load cert chain & key");
 
-        let nonce = Nonce::from_platform_rng(48).expect("get Nonce from RNG");
-        let attestation = mock.attest(&nonce).await.expect("attest to nonce");
+        let qdata = QualifyingData::from_platform_rng(48)
+            .expect("get QualifyingData from RNG");
+        let attestation = mock
+            .attest(&qdata)
+            .await
+            .expect("attest to QualifyingData");
         let signing_key = fs::read_to_string(&signing_key)
             .expect("Read signing key from file to string");
         let signing_key = SigningKey::from_pkcs8_pem(&signing_key)
@@ -368,7 +384,7 @@ mod test {
             Attestation::P384(a) => {
                 let sig = Signature::from_slice(a.as_ref())
                     .expect("signature from Attestation::P384 bytes");
-                let ret = verifying_key.verify(nonce.as_ref(), &sig);
+                let ret = verifying_key.verify(qdata.as_ref(), &sig);
                 assert!(ret.is_ok());
             }
         }
