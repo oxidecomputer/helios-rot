@@ -149,7 +149,7 @@ pub trait DynHeliosRot: Send + Sync {
     async fn dyn_get_certificates(&self) -> Result<PkiPath, DynHeliosRotError>;
     async fn dyn_attest(
         &self,
-        nonce: &Nonce,
+        qdata: &QualifyingData,
     ) -> Result<Attestation, DynHeliosRotError>;
 }
 
@@ -165,9 +165,9 @@ impl<T: HeliosRot + Send + Sync> DynHeliosRot for T {
 
     async fn dyn_attest(
         &self,
-        nonce: &Nonce,
+        qdata: &QualifyingData,
     ) -> Result<Attestation, DynHeliosRotError> {
-        HeliosRot::attest(self, nonce)
+        HeliosRot::attest(self, qdata)
             .await
             .map_err(|e| DynHeliosRotError(Box::new(e)))
     }
@@ -183,8 +183,11 @@ impl HeliosRot for dyn DynHeliosRot {
         self.dyn_get_certificates().await
     }
 
-    async fn attest(&self, nonce: &Nonce) -> Result<Attestation, Self::Error> {
-        self.dyn_attest(nonce).await
+    async fn attest(
+        &self,
+        qdata: &QualifyingData,
+    ) -> Result<Attestation, Self::Error> {
+        self.dyn_attest(qdata).await
     }
 }
 
@@ -242,9 +245,8 @@ impl HeliosRot for HeliosOsRot {
         qdata: &QualifyingData,
     ) -> Result<Attestation, Self::Error> {
         let QualifyingData::Q48(qdata) = *qdata;
-        let raw = self
-            .do_rot_request(move |handle| handle.attest(&qdata.0))
-            .await?;
+        let raw =
+            self.do_rot_request(move |handle| handle.attest(&qdata.0)).await?;
         let sig = P384Signature::try_from(raw.as_slice())?;
         Ok(Attestation::P384(sig))
     }
@@ -322,8 +324,7 @@ impl HeliosRot for HeliosRotMock {
         &self,
         qdata: &QualifyingData,
     ) -> Result<Attestation, Self::Error> {
-        let sig: Signature =
-            self.alias_key.try_sign(qdata.as_ref())?;
+        let sig: Signature = self.alias_key.try_sign(qdata.as_ref())?;
         let sig = P384Signature::try_from(sig.to_bytes().as_slice())?;
         Ok(Attestation::P384(sig))
     }
@@ -413,10 +414,8 @@ mod test {
 
         let qdata = QualifyingData::from_platform_rng(48)
             .expect("get QualifyingData from RNG");
-        let attestation = mock
-            .attest(&qdata)
-            .await
-            .expect("attest to QualifyingData");
+        let attestation =
+            mock.attest(&qdata).await.expect("attest to QualifyingData");
         let signing_key = fs::read_to_string(&signing_key)
             .expect("Read signing key from file to string");
         let signing_key = SigningKey::from_pkcs8_pem(&signing_key)
